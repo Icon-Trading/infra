@@ -14,6 +14,14 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Read shared resources from the shared terraform state
+data "terraform_remote_state" "shared" {
+  backend = "local"
+  config = {
+    path = "${path.module}/../shared/terraform.tfstate"
+  }
+}
+
 # image
 data "aws_ami" "ubuntu" {
   most_recent = true  # Get the newest matching AMI
@@ -55,7 +63,7 @@ resource "aws_instance" "latency_test" {
   instance_type     = var.instance_type
   key_name          = var.key_pair_name
   availability_zone = var.availability_zone
-  iam_instance_profile = aws_iam_instance_profile.instance_profile.name  # Permissions for S3
+  iam_instance_profile = data.terraform_remote_state.shared.outputs.instance_profile_name
 
   network_interface {
     network_interface_id = aws_network_interface.main.id
@@ -83,7 +91,7 @@ resource "aws_instance" "latency_test" {
   # templatefile() reads user_data.sh and substitutes variables
   user_data = base64encode(templatefile("${path.module}/user_data.sh", {
     binance_endpoints = jsonencode(var.binance_endpoints)
-    s3_bucket         = aws_s3_bucket.results.id
+    s3_bucket         = data.terraform_remote_state.shared.outputs.s3_bucket_name
     region            = var.aws_region
     availability_zone = var.availability_zone
   }))
@@ -144,7 +152,7 @@ output "instance_id" {
 
 output "s3_bucket_name" {
   description = "S3 bucket for results"
-  value       = aws_s3_bucket.results.id
+  value       = data.terraform_remote_state.shared.outputs.s3_bucket_name
 }
 
 output "region" {

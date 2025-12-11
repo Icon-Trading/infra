@@ -6,8 +6,12 @@ set -e
 export AWS_PROFILE=default
 
 # Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EC2_DIR="$SCRIPT_DIR/ec2"
+SHARED_DIR="$SCRIPT_DIR/shared"
+
 # Read defaults from terraform.tfvars (single source of truth)
-TFVARS_FILE="terraform.tfvars"
+TFVARS_FILE="$EC2_DIR/terraform.tfvars"
 
 # Helper to read value from tfvars
 read_tfvar() {
@@ -27,7 +31,7 @@ TARGET_LATENCY="${TARGET_LATENCY:-1}"    # Keep instances below this latency (ms
 NUM_INSTANCES="${NUM_INSTANCES:-2}"      # Number of instances to test
 
 # Results directory (all results go here)
-RESULTS_BASE="./results"
+RESULTS_BASE="$SCRIPT_DIR/results"
 RESULTS_DIR="$RESULTS_BASE/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RESULTS_DIR"
 RESULTS_FILE="$RESULTS_DIR/latency_results.csv"
@@ -36,20 +40,6 @@ LOG_FILE="$RESULTS_DIR/run.log"
 # Log function: echo to terminal AND append to log file
 log() {
     echo "$@" | tee -a "$LOG_FILE"
-}
-
-
-# TODO: REMOVE THIS MONKEY PATCH after fixing IAM permissions
-# Remove IAM resources from state before destroy (no delete permission)
-# Terraform Resource	                       AWS Name
-# aws_s3_bucket.results	                       binance-latency-results-{{project_name}}
-# aws_iam_role.instance_role	               {{project_name}}-instance-role
-# aws_iam_role_policy.s3_access	               {{project_name}}-s3-access
-# aws_iam_instance_profile.instance_profile	   {{project_name}}-instance-profile
-remove_iam_from_state() {
-    terraform state rm aws_iam_role_policy.s3_access 2>/dev/null || true
-    terraform state rm aws_iam_role.instance_role 2>/dev/null || true
-    terraform state rm aws_iam_instance_profile.instance_profile 2>/dev/null || true
 }
 
 echo "region,az,instance,min_tcp_ms,avg_tcp_ms,p95_tcp_ms,min_http_ms,avg_http_ms,p95_http_ms,instance_ip,kept" > "$RESULTS_FILE"
@@ -65,6 +55,8 @@ test_instance() {
     echo "Testing: $region / $az / Instance #$instance_num"
     echo "=========================================="
     
+    cd "$EC2_DIR"
+    
     # Create workspace for this test
     local workspace_name="${region}_${az//-/_}_inst${instance_num}"
     terraform workspace new "$workspace_name" 2>/dev/null || terraform workspace select "$workspace_name"
@@ -77,7 +69,6 @@ test_instance() {
     
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to deploy in $region/$az"
-        remove_iam_from_state
         terraform destroy -auto-approve 2>/dev/null || true
         return 1
     fi
@@ -153,7 +144,6 @@ test_instance() {
         echo "⚠ Timeout: No results received after ${MAX_WAIT}s"
         echo "Check instance logs or S3 bucket for errors"
         echo "$region,$az,$instance_num,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,N/A,destroyed" >> "$RESULTS_FILE"
-        remove_iam_from_state
         terraform destroy -auto-approve
         return 1
     fi
@@ -169,7 +159,7 @@ test_instance() {
             echo "🎯 EXCELLENT LATENCY: ${avg_tcp}ms < ${TARGET_LATENCY}ms - KEEPING INSTANCE #$instance_num!"
             echo "   Instance IP: $instance_ip"
             echo "   Workspace: $workspace_name"
-            echo "   To destroy later: terraform workspace select $workspace_name && terraform destroy"
+            echo "   To destroy later: cd ec2 && terraform workspace select $workspace_name && terraform destroy"
             should_destroy=false
             # Update CSV to mark as kept
             sed -i "s/$region,$az,$instance_num,.*,pending$/$region,$az,$instance_num,$min_tcp,$avg_tcp,$p95_tcp,$min_http,$avg_http,$p95_http,$instance_ip,KEPT/" "$RESULTS_FILE"
@@ -180,7 +170,6 @@ test_instance() {
         echo "Destroying instance #$instance_num (latency: ${avg_tcp}ms >= ${TARGET_LATENCY}ms)..."
         # Update CSV to mark as destroyed
         sed -i "s/$region,$az,$instance_num,.*,pending$/$region,$az,$instance_num,$min_tcp,$avg_tcp,$p95_tcp,$min_http,$avg_http,$p95_http,$instance_ip,destroyed/" "$RESULTS_FILE"
-        remove_iam_from_state
         terraform destroy -auto-approve
     fi
     
@@ -220,7 +209,29 @@ if ! aws sts get-caller-identity &> /dev/null; then
     exit 1
 fi
 
-# Initialize terraform
+# ==========================================
+# STEP 1: Initialize and apply shared resources (S3 + IAM)
+# ==========================================
+echo ""
+echo "=========================================="
+echo "Setting up shared resources (S3 + IAM)..."
+echo "=========================================="
+cd "$SHARED_DIR"
+terraform init
+terraform apply -auto-approve
+
+# Get S3 bucket name for reference
+S3_BUCKET=$(terraform output -raw s3_bucket_name)
+echo "✓ Shared resources ready. S3 bucket: $S3_BUCKET"
+
+# ==========================================
+# STEP 2: Initialize EC2 terraform
+# ==========================================
+echo ""
+echo "=========================================="
+echo "Initializing EC2 terraform..."
+echo "=========================================="
+cd "$EC2_DIR"
 terraform init
 
 # Test multiple instances in target zone
@@ -257,6 +268,7 @@ if [ "$kept_count" -gt 0 ]; then
     grep ",KEPT$" "$RESULTS_FILE" | sort -t',' -k5 -n | column -t -s','
     echo ""
     echo "To destroy a kept instance:"
+    echo "  cd ec2"
     echo "  terraform workspace select <workspace_name>"
     echo "  terraform destroy"
 else

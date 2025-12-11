@@ -73,7 +73,7 @@ resource "aws_security_group" "binance" {
   }
 }
 
-# OUTPUTS
+# Outputs
 output "vpc_id" {
   value = aws_vpc.binance.id
 }
