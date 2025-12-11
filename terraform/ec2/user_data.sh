@@ -4,7 +4,8 @@ exec > >(tee /home/ubuntu/user-data.log | logger -t user-data -s 2>/dev/console)
 
 # Configure SSH to listen on port 21112
 echo "Port 21112" >> /etc/ssh/sshd_config.d/custom.conf
-systemctl restart ssh
+systemctl daemon-reload
+systemctl restart ssh.socket ssh
 
 # Install minimal packages
 export DEBIAN_FRONTEND=noninteractive
@@ -37,9 +38,9 @@ su - ubuntu -c 'cd /home/ubuntu/latency_tests && BINANCE_ENDPOINTS='"'"'${binanc
 # Upload results
 RESULTS_FILE=$(ls -t /home/ubuntu/latency_tests/results_*.json 2>/dev/null | head -1)
 if [ -n "$RESULTS_FILE" ]; then
-    FILENAME="results_${region}_${availability_zone}_$(date +%s).json"
+    FILENAME="results_${region}_${availability_zone}_inst${instance_num}_$(date +%s).json"
     aws s3 cp "$RESULTS_FILE" "s3://${s3_bucket}/$FILENAME" --region ${region} && echo "Results uploaded to S3"
 else
-    aws s3 cp /home/ubuntu/latency_tests/latency_test.log "s3://${s3_bucket}/error_${region}_${availability_zone}_$(date +%s).log" --region ${region}
+    aws s3 cp /home/ubuntu/latency_tests/latency_test.log "s3://${s3_bucket}/error_${region}_${availability_zone}_inst${instance_num}_$(date +%s).log" --region ${region}
 fi
 echo "Done!"

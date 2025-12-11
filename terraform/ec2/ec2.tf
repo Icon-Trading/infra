@@ -94,6 +94,7 @@ resource "aws_instance" "latency_test" {
     s3_bucket         = data.terraform_remote_state.shared.outputs.s3_bucket_name
     region            = var.aws_region
     availability_zone = var.availability_zone
+    instance_num      = var.instance_num
   }))
 
   tags = {

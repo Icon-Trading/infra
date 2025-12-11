@@ -89,3 +89,9 @@ variable "binance_endpoints" {
     coin_futures   = "dapi.binance.com"
   }
 }
+
+variable "instance_num" {
+  description = "Instance number for this test run (used in S3 result filename)"
+  type        = number
+  default     = 1
+}

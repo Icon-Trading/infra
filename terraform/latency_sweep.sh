@@ -26,7 +26,7 @@ INSTANCE_TYPE="${INSTANCE_TYPE:-$(read_tfvar instance_type)}"
 # Script-only variables (not in Terraform)
 TEST_DURATION="${TEST_DURATION:-120}"    # seconds to run latency test
 POLL_INTERVAL="${POLL_INTERVAL:-30}"     # how often to check S3 for results
-MAX_WAIT="${MAX_WAIT:-600}"              # max seconds to wait for results (10 min)
+MAX_WAIT="${MAX_WAIT:-300}"              # max seconds to wait for results (5 min)
 TARGET_LATENCY="${TARGET_LATENCY:-1}"    # Keep instances below this latency (ms)
 NUM_INSTANCES="${NUM_INSTANCES:-2}"      # Number of instances to test
 
@@ -65,7 +65,8 @@ test_instance() {
     terraform apply -auto-approve \
         -var "aws_region=$region" \
         -var "availability_zone=$az" \
-        -var "instance_type=$INSTANCE_TYPE"
+        -var "instance_type=$INSTANCE_TYPE" \
+        -var "instance_num=$instance_num"
     
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to deploy in $region/$az"
@@ -100,9 +101,9 @@ test_instance() {
     local results_found=false
     
     while [ $waited -lt $MAX_WAIT ]; do
-        # Check if results file exists in S3
+        # Check if results file exists in S3 (instance-specific)
         local s3_results
-        s3_results=$(aws s3 ls "s3://$s3_bucket/results_${region}_${az}_" --region "$region" 2>/dev/null | tail -1 || true)
+        s3_results=$(aws s3 ls "s3://$s3_bucket/results_${region}_${az}_inst${instance_num}_" --region "$region" 2>/dev/null | tail -1 || true)
         
         if [ -n "$s3_results" ]; then
             echo "✓ Results found in S3!"
@@ -224,6 +225,10 @@ terraform apply -auto-approve
 S3_BUCKET=$(terraform output -raw s3_bucket_name)
 echo "✓ Shared resources ready. S3 bucket: $S3_BUCKET"
 
+echo "Clearing previous results from S3..."
+aws s3 rm "s3://$S3_BUCKET/" --recursive --exclude "scripts/*" 2>/dev/null || true
+echo "✓ S3 bucket cleared (scripts preserved)"
+
 # ==========================================
 # STEP 2: Initialize EC2 terraform
 # ==========================================
@@ -266,21 +271,12 @@ if [ "$kept_count" -gt 0 ]; then
     echo "🎯 KEPT INSTANCES (latency < ${TARGET_LATENCY}ms):"
     echo ""
     grep ",KEPT$" "$RESULTS_FILE" | sort -t',' -k5 -n | column -t -s','
-    echo ""
-    echo "To destroy a kept instance:"
-    echo "  cd ec2"
-    echo "  terraform workspace select <workspace_name>"
-    echo "  terraform destroy"
 else
     echo "❌ No instances met the target latency of <${TARGET_LATENCY}ms"
     echo ""
     echo "Best result was:"
     sort -t',' -k5 -n "$RESULTS_FILE" | grep -v "region" | head -1 | column -t -s','
     echo ""
-    echo "Consider:"
-    echo "  - Increasing NUM_INSTANCES (current: $NUM_INSTANCES)"
-    echo "  - Relaxing TARGET_LATENCY (current: ${TARGET_LATENCY}ms)"
-    echo "  - Running at a different time of day"
 fi
 
 # Find best instance
