@@ -27,7 +27,7 @@ INSTANCE_TYPE="${INSTANCE_TYPE:-$(read_tfvar instance_type)}"
 POLL_INTERVAL="${POLL_INTERVAL:-30}"     # how often to check S3 for results
 MAX_WAIT="${MAX_WAIT:-600}"              # max seconds to wait for results (5 min)
 TARGET_LATENCY="${TARGET_LATENCY:-1}"    # Keep instances below this latency (ms)
-NUM_INSTANCES="${NUM_INSTANCES:-60}"      # Number of instances to test
+NUM_INSTANCES="${NUM_INSTANCES:-10}"      # Number of instances to test
 
 # Results directory (all results go here)
 RESULTS_BASE="$SCRIPT_DIR/results"
@@ -69,7 +69,7 @@ test_instance() {
 
     # Apply terraform
     echo "  Creating instance..."
-    terraform apply -auto-approve -compact-warnings \
+    terraform apply -auto-approve -no-color -compact-warnings \
         -var "aws_region=$region" \
         -var "availability_zone=$az" \
         -var "instance_type=$INSTANCE_TYPE" \
@@ -77,7 +77,7 @@ test_instance() {
     
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to deploy in $region/$az"
-        terraform destroy -auto-approve >> "$TERRAFORM_LOG" 2>&1 || true
+        terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1 || true
         return 1
     fi
     
@@ -149,7 +149,7 @@ test_instance() {
         echo "⚠ Timeout: No results received after ${MAX_WAIT}s"
         echo "Check instance logs or S3 bucket for errors"
         echo "$region,$az,$instance_num,TIMEOUT,TIMEOUT,TIMEOUT,N/A,destroyed" >> "$RESULTS_FILE"
-        terraform destroy -auto-approve >> "$TERRAFORM_LOG" 2>&1
+        terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1
         return 1
     fi
     
@@ -175,7 +175,7 @@ test_instance() {
         echo "Destroying instance #$instance_num (TCP Connect P99: ${tcp_p99}ms >= ${TARGET_LATENCY}ms)..."
         # Update CSV to mark as destroyed
         sed -i "s/$region,$az,$instance_num,.*,pending$/$region,$az,$instance_num,$tcp_p99,$ping_p99,$trade_p99,$instance_ip,destroyed/" "$RESULTS_FILE"
-        terraform destroy -auto-approve -compact-warnings >> "$TERRAFORM_LOG" 2>&1
+        terraform destroy -auto-approve -no-color -compact-warnings >> "$TERRAFORM_LOG" 2>&1
     fi
     
     echo "Completed: $region / $az / Instance #$instance_num"
@@ -222,8 +222,8 @@ echo "=========================================="
 echo "Setting up shared resources (S3 + IAM)..."
 echo "=========================================="
 cd "$SHARED_DIR"
-terraform init -upgrade >> "$TERRAFORM_LOG" 2>&1
-terraform apply -auto-approve -compact-warnings >> "$TERRAFORM_LOG" 2>&1
+terraform init -no-color -upgrade >> "$TERRAFORM_LOG" 2>&1
+terraform apply -auto-approve -no-color -compact-warnings >> "$TERRAFORM_LOG" 2>&1
 
 # Get S3 bucket name for reference
 S3_BUCKET=$(terraform output -raw s3_bucket_name)
@@ -241,7 +241,7 @@ echo "=========================================="
 echo "Initializing EC2 terraform..."
 echo "=========================================="
 cd "$EC2_DIR"
-terraform init -upgrade >> "$TERRAFORM_LOG" 2>&1
+terraform init -no-color -upgrade >> "$TERRAFORM_LOG" 2>&1
 
 # Test multiple instances in target zone
 echo ""

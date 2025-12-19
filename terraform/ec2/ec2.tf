@@ -29,8 +29,8 @@ data "aws_ami" "ubuntu" {
 
   filter {
     name   = "name"
-    # TODO values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"]
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+    # AWS uses "amd64" in AMI names but "x86_64" in architecture field
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-${var.architecture == "x86_64" ? "amd64" : var.architecture}-server-*"]
   }
 
   filter {
@@ -40,8 +40,7 @@ data "aws_ami" "ubuntu" {
 
   filter {
     name   = "architecture"
-    # TODO values = ["arm64"]
-    values = ["x86_64"]
+    values = [var.architecture]
   }
 }
 

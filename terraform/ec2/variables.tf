@@ -95,3 +95,13 @@ variable "instance_num" {
   type        = number
   default     = 1
 }
+
+variable "architecture" {
+  description = "CPU architecture for the instance (arm64 or x86_64)"
+  type        = string
+  default     = "arm64"
+  validation {
+    condition     = contains(["arm64", "x86_64"], var.architecture)
+    error_message = "Architecture must be either 'arm64' or 'x86_64'."
+  }
+}
