@@ -1,0 +1,9 @@
+[package]
+name = "telegram_bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "*", features = ["json"] }
+tokio = { version = "*", features = ["full"] }
+serde_json = "*"
