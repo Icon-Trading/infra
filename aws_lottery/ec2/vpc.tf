@@ -4,7 +4,7 @@ resource "aws_vpc" "binance" {
   enable_dns_hostnames = true
 
   tags = {
-    Name = "binance-vpc"
+    Name = "binance-vpc-steven"
   }
 }
 
