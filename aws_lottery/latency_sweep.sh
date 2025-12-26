@@ -77,7 +77,15 @@ test_instance() {
     
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to deploy in $region/$az"
-        terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1 || true
+        # Cleanup partial resources and workspace
+        for attempt in 1 2 3; do
+            if terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1; then
+                terraform workspace select default
+                terraform workspace delete "$workspace_name" 2>/dev/null || true
+                break
+            fi
+            sleep 10
+        done
         return 1
     fi
     
@@ -160,7 +168,22 @@ test_instance() {
         echo "⚠ Timeout: No results received after ${MAX_WAIT}s"
         echo "Check instance logs or S3 bucket for errors"
         echo "$region,$az,$instance_num,TIMEOUT,TIMEOUT,TIMEOUT,N/A,destroyed" >> "$RESULTS_FILE"
-        terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1
+        
+        # Retry terraform destroy for timeout case
+        local timeout_destroy_success=false
+        for attempt in 1 2 3; do
+            echo "  Destroy attempt $attempt/3 (timeout cleanup)..."
+            if terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1; then
+                timeout_destroy_success=true
+                break
+            fi
+            sleep 10
+        done
+        
+        if [ "$timeout_destroy_success" = true ]; then
+            terraform workspace select default
+            terraform workspace delete "$workspace_name" 2>/dev/null || true
+        fi
         return 1
     fi
     
@@ -196,7 +219,29 @@ test_instance() {
         echo "Destroying instance #$instance_num (TCP Connect P99: ${tcp_p99}ms >= ${TARGET_LATENCY}ms)..."
         # Update CSV to mark as destroyed
         sed -i "s/$region,$az,$instance_num,.*,pending$/$region,$az,$instance_num,$tcp_p99,$ping_p99,$trade_p99,$instance_ip,destroyed/" "$RESULTS_FILE"
-        terraform destroy -auto-approve -no-color -compact-warnings >> "$TERRAFORM_LOG" 2>&1
+        
+        # Retry terraform destroy up to 3 times (handles race conditions)
+        local destroy_success=false
+        for attempt in 1 2 3; do
+            echo "  Destroy attempt $attempt/3..."
+            if terraform destroy -auto-approve -no-color -compact-warnings >> "$TERRAFORM_LOG" 2>&1; then
+                destroy_success=true
+                break
+            else
+                echo "  ⚠️  Destroy attempt $attempt failed, retrying in 10s..."
+                sleep 10
+            fi
+        done
+        
+        if [ "$destroy_success" = true ]; then
+            echo "  ✓ Resources destroyed, cleaning up workspace..."
+            terraform workspace select default
+            terraform workspace delete "$workspace_name" 2>/dev/null || true
+            echo "  ✓ Workspace $workspace_name deleted"
+        else
+            echo "  ❌ Destroy failed after 3 attempts. Workspace $workspace_name left intact."
+            echo "  Run ./ec2/cleanup_orphaned_resources.sh $region to clean up manually."
+        fi
     fi
     
     echo "Completed: $region / $az / Instance #$instance_num"
