@@ -90,4 +90,8 @@ else
 fi
 ############################################################
 
+# Upload the complete user-data script log to S3
+aws s3 cp /home/ubuntu/user-data.log "s3://${s3_bucket}/results/user_data_${region}_${availability_zone}_inst${instance_num}.log" --region ${region}
+echo "User data log uploaded to S3"
+
 echo "Done! All tests completed and results uploaded"
