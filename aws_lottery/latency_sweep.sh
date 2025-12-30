@@ -27,7 +27,7 @@ INSTANCE_TYPE="${INSTANCE_TYPE:-$(read_tfvar instance_type)}"
 POLL_INTERVAL="${POLL_INTERVAL:-30}"     # how often to check S3 for results
 MAX_WAIT="${MAX_WAIT:-600}"              # max seconds to wait for results
 TARGET_LATENCY="${TARGET_LATENCY:-4}"  # Keep instances below this latency (ms)
-NUM_INSTANCES="${NUM_INSTANCES:-20}"      # Number of instances to test
+NUM_INSTANCES="${NUM_INSTANCES:-1}"      # Number of instances to test
 
 # Results directory (all results go here)
 RESULTS_BASE="$SCRIPT_DIR/results"
@@ -42,7 +42,7 @@ log() {
     echo "$@" | tee -a "$LOG_FILE"
 }
 
-echo "region,az,instance,tcp_p99_ms,ping_p99_ms,trade_p99_ms,order_p99_ms,orderbook_p99_ms,order_median_ms,orderbook_median_ms,,combined_ms,instance_ip,kept" > "$RESULTS_FILE"
+echo "region,az,instance,tcp_p99_ms,ping_p99_ms,trade_p99_ms,order_p99_ms,orderbook_p99_ms,order_median_ms,orderbook_median_ms,combined_ms,instance_ip,kept" > "$RESULTS_FILE"
 
 # Function to test a single instance
 test_instance() {
@@ -403,7 +403,7 @@ echo "Downloaded JSON files in: $RESULTS_DIR"
 echo ""
 echo "All tested instances (sorted by Combined latency):"
 echo ""
-sort -t',' -k9 -n "$RESULTS_FILE" | column -t -s','
+sort -t',' -k11 -n "$RESULTS_FILE" | column -t -s','
 
 # Show kept instances
 echo ""
@@ -413,27 +413,28 @@ kept_count=$(echo "$kept_count" | tr -d '\n\r' | head -1)
 if [ "$kept_count" -gt 0 ]; then
     echo "🎯 KEPT INSTANCES (Combined < ${TARGET_LATENCY}ms):"
     echo ""
-    grep ",KEPT$" "$RESULTS_FILE" | sort -t',' -k9 -n | column -t -s','
+    grep ",KEPT$" "$RESULTS_FILE" | sort -t',' -k11 -n | column -t -s','
 else
     echo "❌ No instances met the target latency of <${TARGET_LATENCY}ms"
     echo ""
     echo "Best result was:"
-    sort -t',' -k9 -n "$RESULTS_FILE" | grep -v "region" | head -1 | column -t -s','
+    sort -t',' -k11 -n "$RESULTS_FILE" | grep -v "region" | head -1 | column -t -s','
     echo ""
 fi
 
 # Find best instance (by combined latency)
 echo ""
 echo "🏆 BEST MACHINE:"
-best_line=$(sort -t',' -k9 -n "$RESULTS_FILE" | grep -v TIMEOUT | grep -v "region" | head -1)
+best_line=$(sort -t',' -k11 -n "$RESULTS_FILE" | grep -v TIMEOUT | grep -v "region" | head -1)
 echo "$best_line" | column -t -s','
 
 best_tcp_p99=$(echo "$best_line" | cut -d',' -f4)
 best_ping_p99=$(echo "$best_line" | cut -d',' -f5)
-best_order_median=$(echo "$best_line" | cut -d',' -f7)
-best_order_p99=$(echo "$best_line" | cut -d',' -f8)
-best_orderbook_median=$(echo "$best_line" | cut -d',' -f9)
-best_orderbook_p99=$(echo "$best_line" | cut -d',' -f10)
+best_trade_p99=$(echo "$best_line" | cut -d',' -f6)
+best_order_p99=$(echo "$best_line" | cut -d',' -f7)
+best_orderbook_p99=$(echo "$best_line" | cut -d',' -f8)
+best_order_median=$(echo "$best_line" | cut -d',' -f9)
+best_orderbook_median=$(echo "$best_line" | cut -d',' -f10)
 best_combined=$(echo "$best_line" | cut -d',' -f11)
 best_ip=$(echo "$best_line" | cut -d',' -f12)
 best_status=$(echo "$best_line" | cut -d',' -f13)
@@ -465,7 +466,7 @@ if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
         
         # List kept instances
         msg+="🖥 *Running Instances:*\n"
-        while IFS=',' read -r region az inst tcp ping trade ws_api order_p99 combined ip status; do
+        while IFS=',' read -r region az inst tcp ping trade order_p99 orderbook_p99 order_median orderbook_median combined ip status; do
             if [ "$status" = "KEPT" ]; then
                 msg+="• \`${ip}\`\n"
                 msg+="  Combined: ${combined}ms\n"
