@@ -1,5 +1,5 @@
 aws_region = "ap-northeast-1"
-availability_zone = "ap-northeast-1c"
+availability_zone = "ap-northeast-1a"
 # instance_type = "t2.micro"
 # instance_type = "c7i.metal-48xl"
 instance_type = "c7i.24xlarge"

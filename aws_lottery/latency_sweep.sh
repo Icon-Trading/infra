@@ -32,6 +32,7 @@ NUM_INSTANCES="${NUM_INSTANCES:-1}"      # Number of instances to test
 # Results directory (all results go here)
 RESULTS_BASE="$SCRIPT_DIR/results"
 RESULTS_DIR="$RESULTS_BASE/$(date +%Y%m%d_%H%M%S)"
+SWEEP_ID="$(date +%Y%m%d_%H%M%S)"  # Unique ID for this sweep run
 mkdir -p "$RESULTS_DIR"
 RESULTS_FILE="$RESULTS_DIR/latency_results.csv"
 LOG_FILE="$RESULTS_DIR/run.log"
@@ -43,6 +44,34 @@ log() {
 }
 
 echo "region,az,instance,tcp_p99_ms,ping_p99_ms,trade_p99_ms,order_p99_ms,orderbook_p99_ms,order_median_ms,orderbook_median_ms,combined_ms,instance_ip,kept" > "$RESULTS_FILE"
+
+# Helper function to retry terraform destroy and cleanup workspace
+cleanup_instance() {
+    local workspace_name=$1
+    local destroy_success=false
+    
+    for attempt in 1 2 3; do
+        echo "  Destroy attempt $attempt/3..."
+        if terraform destroy -auto-approve -no-color -compact-warnings >> "$TERRAFORM_LOG" 2>&1; then
+            destroy_success=true
+            break
+        else
+            [ $attempt -lt 3 ] && echo "  ⚠️  Destroy attempt $attempt failed, retrying in 10s..." && sleep 10
+        fi
+    done
+    
+    if [ "$destroy_success" = true ]; then
+        echo "  ✓ Resources destroyed, cleaning up workspace..."
+        terraform workspace select default
+        terraform workspace delete "$workspace_name" 2>/dev/null || true
+        echo "  ✓ Workspace $workspace_name deleted"
+    else
+        echo "  ❌ Destroy failed after 3 attempts. Workspace $workspace_name left intact."
+        echo "  Run ./ec2/cleanup_orphaned_resources.sh to clean up manually."
+    fi
+    
+    return $([ "$destroy_success" = true ] && echo 0 || echo 1)
+}
 
 # Function to test a single instance
 test_instance() {
@@ -57,8 +86,8 @@ test_instance() {
     
     cd "$EC2_DIR"
     
-    # Create workspace for this test
-    local workspace_name="${region}_${az//-/_}_inst${instance_num}"
+    # Create workspace for this test (include sweep ID to avoid collision with kept instances)
+    local workspace_name="${region}_${az//-/_}_inst${instance_num}_${SWEEP_ID}"
     terraform workspace new "$workspace_name" 2>/dev/null || terraform workspace select "$workspace_name"
 
     # Clean up old S3 result files to avoid false matches
@@ -76,15 +105,7 @@ test_instance() {
     
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to deploy in $region/$az"
-        # Cleanup partial resources and workspace
-        for attempt in 1 2 3; do
-            if terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1; then
-                terraform workspace select default
-                terraform workspace delete "$workspace_name" 2>/dev/null || true
-                break
-            fi
-            sleep 10
-        done
+        cleanup_instance "$workspace_name"
         return 1
     fi
     
@@ -147,47 +168,36 @@ test_instance() {
             fi
             
             # Download rs latency test results (both order and orderbook files)
-            local order_median="N/A"
-            local orderbook_median="N/A"
-            local order_p99="N/A"
+            local order_median="N/A" orderbook_median="N/A" order_p99="N/A" orderbook_p99="N/A"
             
-            # Download order latency test results
+            # Download and parse order latency JSON
             local order_latency_file
             order_latency_file=$(aws s3 ls "s3://$s3_bucket/results/order_latency_${region}_${az}_inst${instance_num}" --region "$region" 2>/dev/null | tail -1 | awk '{print $4}' || true)
             if [ -n "$order_latency_file" ]; then
                 local local_order_file="$RESULTS_DIR/${region}_${az}_inst${instance_num}_order_latency.json"
                 aws s3 cp "s3://$s3_bucket/results/$order_latency_file" "$local_order_file" --region "$region"
                 echo "  Order latency test downloaded: $local_order_file"
-                # Parse median from JSON (in nanoseconds, convert to milliseconds)
+                # Parse median and p99 from JSON (nanoseconds -> milliseconds)
                 local median_ns p99_ns
                 median_ns=$(jq -r '.statistics_ns.median // empty' "$local_order_file" 2>/dev/null || echo "")
                 p99_ns=$(jq -r '.statistics_ns.p99 // empty' "$local_order_file" 2>/dev/null || echo "")
-                if [ -n "$median_ns" ]; then
-                    order_median=$(echo "scale=3; $median_ns / 1000000" | bc)
-                fi
-                if [ -n "$p99_ns" ]; then
-                    order_p99=$(echo "scale=3; $p99_ns / 1000000" | bc)
-                fi
+                [ -n "$median_ns" ] && order_median=$(echo "scale=3; $median_ns / 1000000" | bc)
+                [ -n "$p99_ns" ] && order_p99=$(echo "scale=3; $p99_ns / 1000000" | bc)
             fi
             
-            # Download orderbook latency test results
+            # Download and parse orderbook latency JSON
             local orderbook_latency_file
-            local orderbook_p99="N/A"
             orderbook_latency_file=$(aws s3 ls "s3://$s3_bucket/results/orderbook_latency_${region}_${az}_inst${instance_num}" --region "$region" 2>/dev/null | tail -1 | awk '{print $4}' || true)
             if [ -n "$orderbook_latency_file" ]; then
                 local local_orderbook_file="$RESULTS_DIR/${region}_${az}_inst${instance_num}_orderbook_latency.json"
                 aws s3 cp "s3://$s3_bucket/results/$orderbook_latency_file" "$local_orderbook_file" --region "$region"
                 echo "  Orderbook latency test downloaded: $local_orderbook_file"
-                # Parse median and p99 from JSON (in nanoseconds, convert to milliseconds)
+                # Parse median and p99 from JSON (nanoseconds -> milliseconds)
                 local ob_median_ns ob_p99_ns
                 ob_median_ns=$(jq -r '.statistics_ns.median // empty' "$local_orderbook_file" 2>/dev/null || echo "")
                 ob_p99_ns=$(jq -r '.statistics_ns.p99 // empty' "$local_orderbook_file" 2>/dev/null || echo "")
-                if [ -n "$ob_median_ns" ]; then
-                    orderbook_median=$(echo "scale=3; $ob_median_ns / 1000000" | bc)
-                fi
-                if [ -n "$ob_p99_ns" ]; then
-                    orderbook_p99=$(echo "scale=3; $ob_p99_ns / 1000000" | bc)
-                fi
+                [ -n "$ob_median_ns" ] && orderbook_median=$(echo "scale=3; $ob_median_ns / 1000000" | bc)
+                [ -n "$ob_p99_ns" ] && orderbook_p99=$(echo "scale=3; $ob_p99_ns / 1000000" | bc)
             fi
             
             # Parse P99 results from log (format: "  tcp_connect          : 0.123 ms")
@@ -203,8 +213,6 @@ test_instance() {
             fi
             
             # Save to results file
-            local instance_ip
-            instance_ip=$(terraform output -raw instance_public_ip 2>/dev/null || echo 'N/A')
             echo "$region,$az,$instance_num,$tcp_p99,$ping_p99,$trade_p99,$order_p99,$orderbook_p99,$order_median,$orderbook_median,$combined_ms,$instance_ip,pending" >> "$RESULTS_FILE"
             
             echo "Results: Orderbook Median=${orderbook_median}ms, Order Median=${order_median}ms, Combined=${combined_ms}ms"
@@ -222,29 +230,12 @@ test_instance() {
         echo "⚠ Timeout: No results received after ${MAX_WAIT}s"
         echo "Check instance logs or S3 bucket for errors"
         echo "$region,$az,$instance_num,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,N/A,destroyed" >> "$RESULTS_FILE"
-        
-        # Retry terraform destroy for timeout case
-        local timeout_destroy_success=false
-        for attempt in 1 2 3; do
-            echo "  Destroy attempt $attempt/3 (timeout cleanup)..."
-            if terraform destroy -auto-approve -no-color >> "$TERRAFORM_LOG" 2>&1; then
-                timeout_destroy_success=true
-                break
-            fi
-            sleep 10
-        done
-        
-        if [ "$timeout_destroy_success" = true ]; then
-            terraform workspace select default
-            terraform workspace delete "$workspace_name" 2>/dev/null || true
-        fi
+        cleanup_instance "$workspace_name"
         return 1
     fi
     
-    # Cleanup decision based on combined latency (order_median + orderbook_median)
+    # Cleanup decision based on combined latency
     local should_destroy=true
-    local instance_ip
-    instance_ip=$(terraform output -raw instance_public_ip 2>/dev/null || echo 'N/A')
     
     # Use combined latency (0.5 * order median + orderbook median) for comparison
     local compare_latency="$combined_ms"
@@ -284,29 +275,7 @@ test_instance() {
         echo "Destroying instance #$instance_num (${compare_label}: ${compare_latency}ms >= ${TARGET_LATENCY}ms)..."
         # Update CSV to mark as destroyed
         sed -i "s/$region,$az,$instance_num,.*,pending$/$region,$az,$instance_num,$tcp_p99,$ping_p99,$trade_p99,$order_p99,$orderbook_p99,$order_median,$orderbook_median,$combined_ms,$instance_ip,destroyed/" "$RESULTS_FILE"
-        
-        # Retry terraform destroy up to 3 times (handles race conditions)
-        local destroy_success=false
-        for attempt in 1 2 3; do
-            echo "  Destroy attempt $attempt/3..."
-            if terraform destroy -auto-approve -no-color -compact-warnings >> "$TERRAFORM_LOG" 2>&1; then
-                destroy_success=true
-                break
-            else
-                echo "  ⚠️  Destroy attempt $attempt failed, retrying in 10s..."
-                sleep 10
-            fi
-        done
-        
-        if [ "$destroy_success" = true ]; then
-            echo "  ✓ Resources destroyed, cleaning up workspace..."
-            terraform workspace select default
-            terraform workspace delete "$workspace_name" 2>/dev/null || true
-            echo "  ✓ Workspace $workspace_name deleted"
-        else
-            echo "  ❌ Destroy failed after 3 attempts. Workspace $workspace_name left intact."
-            echo "  Run ./ec2/cleanup_orphaned_resources.sh $region to clean up manually."
-        fi
+        cleanup_instance "$workspace_name"
     fi
     
     echo "Completed: $region / $az / Instance #$instance_num"
@@ -416,10 +385,6 @@ if [ "$kept_count" -gt 0 ]; then
     grep ",KEPT$" "$RESULTS_FILE" | sort -t',' -k11 -n | column -t -s','
 else
     echo "❌ No instances met the target latency of <${TARGET_LATENCY}ms"
-    echo ""
-    echo "Best result was:"
-    sort -t',' -k11 -n "$RESULTS_FILE" | grep -v "region" | head -1 | column -t -s','
-    echo ""
 fi
 
 # Find best instance (by combined latency)
