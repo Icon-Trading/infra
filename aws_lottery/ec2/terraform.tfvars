@@ -10,7 +10,7 @@ architecture = "x86_64"
 key_pair_name = "aws-steven-2026"
 
 # Storage configuration
-root_volume_size       = 32
+root_volume_size       = 128
 root_volume_type       = "gp3"
 root_volume_iops       = 3000
 root_volume_throughput = 125
